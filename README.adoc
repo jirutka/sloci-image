@@ -1,0 +1,9 @@
+= sloci-image
+
+TODO
+
+
+== License
+
+This project is licensed under http://opensource.org/licenses/MIT/[MIT License].
+For the full text of the license, see the link:LICENSE[LICENSE] file.

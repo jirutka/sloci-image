@@ -1,0 +1,430 @@
+#!/bin/sh
+# vim: set ts=4:
+#---help---
+# Usage:
+#   sloci-image [options] ROOTFS NAME[:TAG]
+#   sloci-image [-h | -V]
+#
+# Create a single-layer OCI image with the given rootfs.
+#
+# Arguments:
+#   ROOTFS                 Directory or tar.gz archive with rootfs to pack into the image.
+#                          Important: Archive will be *moved* to the image, so make a copy if you
+#                          need it. Directory will be preserved.
+#
+#   NAME                   Name of the image.
+#
+#   TAG                    Tag for the image. Defaults to "latest".
+#
+# Options:
+#   -m --arch ARCH         CPU architecture which the binaries in this image are built to run on.
+#                          Defaults to $(uname -m).
+#
+#      --arch-variant      Variant of the CPU. This is typically used only for arm (v6, v7, v8).
+#
+#   -a --author NAME       Name and/or email address of the person which created the image.
+#
+#   -c --cmd CMD           Default arguments to the entrypoint of the container.
+#
+#      --debug             Print debug messages (it can be also enabled with env. variable DEBUG).
+#
+#   -C --entrypoint EP     Arguments to use as the command to execute when the container starts.
+#
+#   -e --env VAR=VAL       Default environment variables for container.
+#
+#   -l --label KEY=VALUE   Metadata for the container compliant with OCI annotation rules.
+#                          If KEY starts with a dot, it will be prefixed with
+#                          "org.opencontainers.image" (e.g. .url -> org.opencontainers.image.url).
+#
+#      --os OS             Name of the OS which the image is built to run on. Defaults to "linux".
+#
+#   -p --port PORT[/PROT]  Default set of ports to expose from a container running this image in
+#                          format: <port>/tcp, <port>/udp, or <port> (same as <port>/tcp).
+#                          Aliases: --expose.
+#
+#   -t --tar               Pack image in a TAR archive.
+#
+#   -u --user USER         The username or UID of user the process run as.
+#
+#   -v --volume PATH       Default set of directories describing where the process is likely write
+#                          data specific to a container instance.
+#
+#   -w --working-dir DIR   Sets the current working directory of the entrypoint process in the
+#                          container.
+#
+#   -V --version           Print version and exit.
+#
+#   -h --help              Print this message and exit.
+#
+# Please report bugs at <https://github.com/jirutka/sloci-image/issues>.
+#---help---
+set -eu
+
+readonly PROGNAME='sloci-image'
+readonly VERSION='0.0.0'
+readonly LIST_SEP='\@\'
+
+DIGEST_ALG='sha256'
+
+
+# Enable pipefail if supported.
+if ( set -o pipefail 2>/dev/null ); then
+	set -o pipefail
+fi
+
+# Prints error message $@ to STDERR and exits with status 1.
+die() {
+	printf '\033[1;31mERROR:\033[0m %s\n' "$@" >&2  # bold red
+	exit 1
+}
+
+# Prints help and exists with the specified status.
+help() {
+	sed -En '/^#---help---/,/^#---help---/p' "$0" \
+		| sed -E 's/^# ?//; 1d;$d;'
+	exit ${1:-0}
+}
+
+# Tests if $1 is a key=value, i.e. whether it contains "=".
+is_keyval() {
+	case "$1" in
+		*=*) return 0;;
+		*) return 1;;
+	esac
+}
+
+# Prints the current date and UTC time in ISO 8601.
+time_now() {
+	date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+# Computes and prints checksum of the file with path $1, or STDIN.
+digest() {
+	local checksum
+
+	if [ $# -eq 0 ]; then
+		checksum=$(cat | ${DIGEST_ALG}sum)
+	else
+		checksum=$(${DIGEST_ALG}sum "$1")
+	fi
+	checksum=${checksum%% *}
+
+	echo "$DIGEST_ALG:$checksum"
+}
+
+# Moves the file on path $1 to $BLOBS_DIR, or writes STDIN into a file in
+# $BLOBS_DIR (if no args given), and prints digest of the created blob.
+add_blob() {
+	local sha tmpfile
+
+	if [ $# -eq 0 ]; then
+		tmpfile="$BLOBS_DIR/.temp"
+		cat > "$tmpfile"
+	else
+		tmpfile="$1"
+	fi
+	sha=$(digest "$tmpfile")
+
+	mv "$tmpfile" "$BLOBS_DIR"/${sha#*:}
+	echo $sha
+}
+
+# Dumps blob with digest $1 from $BLOBS_DIR.
+read_blob() {
+	cat "$BLOBS_DIR"/${1#*:}
+}
+
+# Prints size (in bytes) of a blob inside $BLOBS_DIR with digest $1.
+blob_size() {
+	stat -c %s "$BLOBS_DIR"/${1#*:}
+}
+
+# Prints the given "list" ($2) as comma-separated items escaped for JSON.
+# This function is used as a base for other json_* functions.
+# Leading $LIST_SEP is ignored. If $2 is empty, nothing is printed.
+#
+# Example:
+#   json_values '"%s"' 'lorem ipsum\@\dolor' -> "lorem ipsum", "dolor"
+#
+# $1: format for printf with single %s
+# $2: items separated by $LIST_SEP or single value
+json_values() {
+	printf '%s' "$2" | awk -v RS="\n" -v FS='' -v fmt="$1" -v ORS=', ' '
+		{ input = input == "" ? $0 : input "\\n" $0 }
+		END {
+			sub(/^\\@\\/, "", input)
+			split(input, a, /\\@\\/)
+			len = length(a)
+			for (i = 1; i <= len; i++) {
+				value = a[i]
+				gsub(/\\([^bfnrt]|$)/, "\\\\&", value)
+				gsub(/"/, "\\\"", value)
+				gsub(/\t/, "\\t", value)
+				gsub(/\r/, "\\r", value)
+				printf(fmt, value)
+				if (i != len) { print "" }
+			}
+		}'
+}
+
+# Prints the given "list" formatted as a JSON array of strings.
+# $1: items separated by $LIST_SEP
+json_string_array() {
+	printf '[ '; json_values '"%s"' "$1"; printf ' ]\n'
+}
+
+# Prints the given "list" formatted as keys of a JSON object with empty values.
+# $1: items separated by $LIST_SEP
+json_pseudoarray() {
+	printf '{ '; json_values '"%s": {}' "$1"; printf ' }\n'
+}
+
+# Prints the given "list" of tuples formatted as a JSON object.
+# $1: key=value items separated by $LIST_SEP
+json_string_map() {
+	printf '{ '
+	json_values '"%s"' "$1" | sed -E 's/("[^"=]+)=/\1": "/g'
+	printf ' }\n'
+}
+
+# Prints the given value formatted as a JSON string.
+# $1: value
+# $2: default value
+json_string() {
+	if [ "$1" ]; then
+		json_values '"%s"' "$1"
+	elif [ "${2:-}" = null ]; then
+		echo null
+	else
+		printf '"%s"' "${2:-}"
+	fi
+}
+
+# Prints $1 with prefix "org.opencontainers.image" if it starts with a dot,
+# otherwise prints $1 as-is.
+prefix_label() {
+	case "$1" in
+		.*) echo "org.opencontainers.image$1";;
+		*) echo "$1";;
+	esac
+}
+
+# Translates arch $1 into OCI (Go) specific codes.
+oci_arch() {
+	case "$1" in
+		x86_64) echo amd64;;
+		x86) echo 386;;
+		aarch64) echo arm64;;
+		arm*) echo arm;;
+		*) echo "$1";;
+	esac
+}
+
+# Prints OCI layout header.
+# MediaType: application/vnd.oci.layout.header.v1+json
+oci_layout_header() {
+	echo '{"imageLayoutVersion": "1.0.0"}'
+}
+
+# Generates OCI image manifest with a single config and layer.
+# MediaType: application/vnd.oci.image.manifest.v1+json
+#
+# $1: digest of the image config json (must be in blobs dir)
+# $2: digest of the image layer in tar+gzip (must be in blobs dir)
+oci_image_manifest() {
+	local config_digest="$1"
+	local layer_digest="$2"
+
+	cat <<-EOF
+	{
+	  "schemaVersion": 2,
+	  "config": {
+	    "mediaType": "application/vnd.oci.image.config.v1+json",
+	    "size": $(blob_size "$config_digest"),
+	    "digest": "$config_digest"
+	  },
+	  "layers": [
+	    {
+	      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+	      "size": $(blob_size "$layer_digest"),
+	      "digest": "$layer_digest"
+	    }
+	  ]
+	}
+	EOF
+}
+
+# Generates OCI image config.
+# MediaType: application/vnd.oci.image.config.v1+json
+#
+# $1: DiffID of the rootfs (i.e. digest of uncompressed TAR archive)
+oci_image_config() {
+	local rootfs_diff_id="$1"
+	local created=$(time_now)
+
+	cat <<-EOF
+	{
+	  "created": "$created",
+	  "author": $(json_string "$CFG_AUTHOR" null),
+	  "architecture": "$(oci_arch $CFG_ARCH)",
+	  "os": "$CFG_OS",
+	  "config": {
+	    ${CFG_USER:+"\"User\": $(json_string "$CFG_USER"),"}
+	    "ExposedPorts": $(json_pseudoarray "$CFG_PORTS"),
+	    "Env": $(json_string_array "$CFG_ENV"),
+	    "Entrypoint": $(json_string_array "$CFG_ENTRYPOINT"),
+	    "Cmd": $(json_string_array "$CFG_CMD"),
+	    "Volumes": $(json_pseudoarray "$CFG_VOLUMES"),
+	    ${CFG_WORKING_DIR:+"\"WorkingDir\": $(json_string "$CFG_WORKING_DIR"),"}
+	    "Labels": $(json_string_map "$CFG_LABELS")
+	  },
+	  "rootfs": {
+	    "diff_ids": [ "$rootfs_diff_id" ],
+	    "type": "layers"
+	  },
+	  "history": [
+	    {
+	      "created": "$created",
+	      "created_by": $(json_string "$CFG_AUTHOR")
+	    }
+	  ]
+	}
+	EOF
+}
+
+# Generates OCI image index with single manifest.
+# MediaType: application/vnd.oci.image.index.v1+json
+#
+# $1: digest of the image manifest json (must be in blobs directory)
+oci_image_index() {
+	local manifest_digest="$1"
+
+	cat <<-EOF
+	{
+	  "schemaVersion": 2,
+	  "manifests": [
+	    {
+	      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+	      "size": $(blob_size "$manifest_digest"),
+	      "digest": "$manifest_digest",
+	      "platform": {
+	        "architecture": "$(oci_arch $CFG_ARCH)",
+	        ${CFG_ARCH_VARIANT:+"\"variant\": $(json_string "$CFG_ARCH_VARIANT"),"}
+	        "os": "$CFG_OS"
+	      },
+	      "annotations": {
+	        "org.opencontainers.image.ref.name": "$CFG_REF_NAME"
+	      }
+	    }
+	  ]
+	}
+	EOF
+}
+
+
+#------------------------------ M a i n -------------------------------#
+
+CFG_ARCH= CFG_ARCH_VARIANT= CFG_AUTHOR= CFG_ENTRYPOINT= CFG_CMD= CFG_ENV=
+CFG_LABELS= CFG_OS= CFG_PORTS= CFG_USER= CFG_VOLUMES= CFG_WORKING_DIR=
+
+CFG_OS='linux'
+OUT_TYPE='dir'
+
+while [ $# -gt 0 ]; do
+	n=2
+	case "$1" in
+		-m | --arch) CFG_ARCH="$2";;
+		     --arch-variant) CFG_ARCH_VARIANT="$2";;
+		-a | --author) CFG_AUTHOR="$2";;
+		-c | --cmd) CFG_CMD="${CFG_CMD}${LIST_SEP}$2";;
+		     --debug) DEBUG='yes'; n=1;;
+		-C | --entrypoint) CFG_ENTRYPOINT="${CFG_ENTRYPOINT}${LIST_SEP}$2";;
+		-e | --env) is_keyval "$2" || die "invalid option: $1 $2"
+		            CFG_ENV="${CFG_ENV}${LIST_SEP}$2";;
+		-h | --help) help 0;;
+		-l | --label) is_keyval "$2" || die "invalid option: $1 $2"
+		              CFG_LABELS="${CFG_LABELS}${LIST_SEP}$(prefix_label "$2")";;
+		     --os) CFG_OS="$2";;
+		-p | --port | --expose) CFG_PORTS="${CFG_PORTS}${LIST_SEP}$2";;
+		-t | --tar) OUT_TYPE='tar'; n=1;;
+		-u | --user) CFG_USER="$2";;
+		-V | --version) echo "$PROGNAME $VERSION"; exit 0;;
+		-v | --volume) CFG_VOLUMES="${CFG_VOLUMES}${LIST_SEP}$2";;
+		-w | --working-dir) CFG_WORKING_DIR="$2";;
+		--) shift; break;;
+		-*) echo "$PROGNAME: unknown option: $1" >&2; help 1 >&2;;
+		*) break;;
+	esac
+	shift $n
+done
+
+: ${CFG_ARCH:=$(uname -m)}
+: ${DEBUG:=}
+
+[ $# -eq 2 ] || help 1
+
+ROOTFS="$1"
+
+case "$2" in
+	*:*) IMAGE_NAME="${2%:*}" CFG_REF_NAME="${2##*:}";;
+	*) IMAGE_NAME="$2" CFG_REF_NAME='latest';;
+esac
+
+[ ! -d "$IMAGE_NAME" ] || die "directory $IMAGE_NAME already exists!"
+
+BLOBS_DIR="$IMAGE_NAME/blobs/$DIGEST_ALG"
+
+if [ -d "$ROOTFS" ]; then
+	mkdir -p "$IMAGE_NAME"
+	rootfs_tgz="$IMAGE_NAME/rootfs.tar.gz"
+
+	tar -C "$ROOTFS" ${DEBUG:+-v} --acls --xattrs -cf "${rootfs_tgz%.gz}" .
+	diff_id=$(digest "${rootfs_tgz%.gz}")
+
+	gzip ${DEBUG:+-v} "${rootfs_tgz%.gz}"
+
+elif [ -f "$ROOTFS" ]; then
+	tar -tzf "$ROOTFS" >/dev/null || die "$ROOTFS is not a tar.gz archive!"
+
+	rootfs_tgz="$ROOTFS"
+	diff_id=$(gzip -cd "$ROOTFS" | digest)
+
+else
+	die "$ROOTFS is not a file nor directory!"
+fi
+
+mkdir -p "$BLOBS_DIR"
+
+layer_digest=$(add_blob "$rootfs_tgz")
+if [ "$DEBUG" ]; then
+	printf '\n>> %s (%d bytes):\n[gzipped tar stream]\n' \
+		$layer_digest $(blob_size $layer_digest) >&2
+fi
+
+config_digest=$(oci_image_config $diff_id | add_blob)
+if [ "$DEBUG" ]; then
+	printf '\n>> %s (%d bytes):\n' $config_digest $(blob_size $config_digest) >&2
+	read_blob $config_digest >&2
+fi
+
+manifest_digest=$(oci_image_manifest $config_digest $layer_digest | add_blob)
+if [ "$DEBUG" ]; then
+	printf '\n>> %s (%d bytes):\n' \
+		"$manifest_digest" $(blob_size $manifest_digest) >&2
+	read_blob $manifest_digest >&2
+fi
+
+oci_layout_header > "$IMAGE_NAME"/oci-layout
+oci_image_index "$manifest_digest" > "$IMAGE_NAME"/index.json
+if [ "$DEBUG" ]; then
+	printf '\n>> index.json:\n' >&2
+	cat "$IMAGE_NAME"/index.json >&2
+fi
+
+if [ "$OUT_TYPE" = tar ]; then
+	file_name="$IMAGE_NAME-$CFG_REF_NAME-$CFG_ARCH"
+	file_name="$file_name${CFG_ARCH_VARIANT:+"-$CFG_ARCH_VARIANT"}-$CFG_OS.oci-image"
+
+	tar ${DEBUG:+-v} -cf "$file_name.tar" "$IMAGE_NAME"
+	rm -Rf "$IMAGE_NAME"
+fi

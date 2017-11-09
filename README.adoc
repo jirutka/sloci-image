@@ -1,4 +1,10 @@
 = sloci-image
+:script-name: sloci-image
+:gh-name: jirutka/{script-name}
+
+ifdef::env-github[]
+image:https://travis-ci.org/{gh-name}.svg?branch=master["Build Status", link="https://travis-ci.org/{gh-name}"]
+endif::env-github[]
 
 TODO
 

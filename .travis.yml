@@ -1,0 +1,30 @@
+dist: trusty
+sudo: false
+language: minimal
+
+addons:
+  apt:
+    packages:
+      - tree
+
+# oci-image-tool is used only for validation of generated image.
+install:
+  - export GOPATH="$HOME/.trash"
+  - image_tools='github.com/opencontainers/image-tools'
+  - go get -d $image_tools/cmd/oci-image-tool
+  - make -C "$GOPATH"/src/$image_tools tool
+  - install -Dm 755 "$GOPATH"/src/$image_tools/oci-image-tool ~/bin/oci-image-tool
+
+before_script:
+  - mkdir -p rootfs/bin
+  - wget -O rootfs/bin/busybox https://busybox.net/downloads/binaries/1.21.1/busybox-x86_64
+  - chmod +x rootfs/bin/busybox
+
+script:
+  - ./sloci-image
+        --debug
+        --author "$(git log -n 1 --format='%aN <%aE>')"
+        --entrypoint bin/busybox
+        rootfs test-image:latest
+  - tree test-image
+  - ~/bin/oci-image-tool validate test-image

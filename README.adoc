@@ -1,12 +1,36 @@
 = sloci-image
 :script-name: sloci-image
+:script-sha1: N/A
+:version: 0.0.0
 :gh-name: jirutka/{script-name}
 
 ifdef::env-github[]
 image:https://travis-ci.org/{gh-name}.svg?branch=master["Build Status", link="https://travis-ci.org/{gh-name}"]
 endif::env-github[]
 
+This project provides a simple CLI tool for packing rootfs into a single-layer OCI image (compliant with OCI Image Format 1.0.1).
+
+
 TODO
+
+
+== Requirements
+
+* POSIX-sh compatible shell (e.g. Busybox ash, dash, Bash, ZSH)
+* common Unix userland with `awk`, `date`, `gzip`, `sed`, `sha256sum` (e.g. from Busybox, core-utils, …)
+* `tar` (full-blown)
+
+
+== Usage
+
+Read documentation in the link:{script-name}[{script-name} script].
+
+You can add {script-name} as a submodule into your repository or download it on demand, e.g.:
+
+[source, sh, subs="+attributes"]
+wget https://raw.githubusercontent.com/{gh-name}/v{version}/{script-name} \
+    && echo '{script-sha1}  {script-name}' | sha1sum -c \
+    || exit 1
 
 
 == License

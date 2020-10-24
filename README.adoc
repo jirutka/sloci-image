@@ -1,7 +1,7 @@
 = sloci-image
 :script-name: sloci-image
-:script-sha1: d1a2cf71a45dec729b7c116f019b279fa51dcff5
-:version: 0.1.0
+:script-sha1: d6e66667a09d8d58ec85fa284574af7946e77fcc
+:version: 0.1.1
 :gh-name: jirutka/{script-name}
 
 ifdef::env-github[]

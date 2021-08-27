@@ -1,0 +1,26 @@
+name: CI
+on:
+  - push
+  - pull_request
+
+jobs:
+  test:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Prepare rootfs contents
+        run: |
+          mkdir -p rootfs/bin
+          wget -O rootfs/bin/busybox https://busybox.net/downloads/binaries/1.21.1/busybox-x86_64
+          chmod +x rootfs/bin/busybox
+
+      - name: Create OCI image
+        run: |
+          ./sloci-image \
+            --debug \
+            --author "$(git log -n 1 --format='%aN <%aE>')" \
+            --entrypoint bin/busybox \
+            rootfs test-image:latest
+
+      - run: tree test-image

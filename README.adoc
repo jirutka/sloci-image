@@ -5,7 +5,7 @@
 :gh-name: jirutka/{script-name}
 
 ifdef::env-github[]
-image:https://travis-ci.org/{gh-name}.svg?branch=master["Build Status", link="https://travis-ci.org/{gh-name}"]
+image:https://github.com/{gh-name}/workflows/CI/badge.svg["Build Status", link="https://github.com/{gh-name}/actions"]
 endif::env-github[]
 
 This project provides a simple CLI tool for packing rootfs into a single-layer OCI image (compliant with OCI Image Format 1.0.1).

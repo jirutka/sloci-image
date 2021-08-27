@@ -425,6 +425,6 @@ if [ "$OUT_TYPE" = tar ]; then
 	file_name="$IMAGE_NAME-$CFG_REF_NAME-$CFG_ARCH"
 	file_name="$file_name${CFG_ARCH_VARIANT:+"-$CFG_ARCH_VARIANT"}-$CFG_OS.oci-image"
 
-	tar ${DEBUG:+-v} -cf "$file_name.tar" "$IMAGE_NAME"
+	tar ${DEBUG:+-v} -cf "$file_name.tar" -C "$IMAGE_NAME" .
 	rm -Rf "$IMAGE_NAME"
 fi

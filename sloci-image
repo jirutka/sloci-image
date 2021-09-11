@@ -214,7 +214,7 @@ oci_arch() {
 	case "$1" in
 		x86_64) echo amd64;;
 		x86) echo 386;;
-		aarch64) echo arm64;;
+		aarch64 | arm64) echo arm64;;
 		arm*) echo arm;;
 		*) echo "$1";;
 	esac

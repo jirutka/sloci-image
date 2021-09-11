@@ -8,10 +8,8 @@ ifdef::env-github[]
 image:https://github.com/{gh-name}/workflows/CI/badge.svg["Build Status", link="https://github.com/{gh-name}/actions"]
 endif::env-github[]
 
-This project provides a simple CLI tool for packing rootfs into a single-layer OCI image (compliant with OCI Image Format 1.0.1).
-
-
-TODO
+This project provides a simple CLI tool for packing rootfs into a *single-layer* OCI image (compliant with OCI Image Format 1.0.1).
+It’s written in POSIX shell and uses only common unix utilities.footnote:[You read it correctly, no bloated Go c̶r̶a̶p̶s̶ tools are needed.]
 
 
 == Requirements
